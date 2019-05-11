@@ -1,0 +1,60 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+#Load data
+```{r}
+#Download the data
+df.sp <- read.csv('sp500.csv')
+library(BatchGetSymbols)
+
+first.date <- Sys.Date() - 3000
+last.date <- Sys.Date() - 60
+freq.data <- 'daily'
+# set tickers
+tickers <- df.sp$Symbol
+
+l.out <- BatchGetSymbols(tickers = tickers, 
+                         first.date = first.date,
+                         last.date = last.date, 
+                         freq.data = freq.data,
+                         cache.folder = file.path(tempdir(), 
+                                                  'BGS_Cache'),
+                         thresh.bad.data = 0.99)
+```
+
+```{r}
+# Transform the data on stocks prices
+df.portfolio <- l.out$df.tickers
+ndays <- length(unique(df.portfolio$ref.date)) # Number of days we have information on prices for
+ncomp <- length(unique(df.portfolio$ticker))  #Total number of assets
+data.prices <- setNames(data.frame(matrix(ncol = ncomp, nrow = ndays)), as.vector(unique(df.portfolio$ticker)))
+for(name in colnames(data.prices)){
+  tryCatch({
+    data.prices[name] <- subset(df.portfolio, df.portfolio$ticker == name)$price.close
+  },  error = function(e) { cat('Missing data')})}
+
+data.prices <- data.prices[, !apply( data.prices , 2 , function(x)any(is.na(x)))]
+head(data.prices)
+```
+
+```{r}
+asset.returns <- data.frame(apply(data.prices[,], 2 ,function(x) diff(x)/head(x,-1)))
+head(asset.returns)
+```
+
+```{r}
+library(quadprog)
+Dmat <- 2*cov(asset.returns)
+dvec <- colMeans(asset.returns)
+Amat <- cbind(1, diag(ncol(asset.returns)))
+bvec <- c(1, rep(0,ncol(asset.returns))) 
+solution <- solve.QP(Dmat, dvec, Amat, bvec, meq = 1)$solution
+# All negatives are extremely small so we dismiss them
+solution[solution < 0] <- 0
+```
+
+```{r}
+sum(solution)
+```
+
