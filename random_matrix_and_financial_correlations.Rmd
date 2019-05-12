@@ -1,0 +1,229 @@
+---
+title: "Cleaning large correlation matrices with random matrix theory tools"
+output:
+  html_document:
+    df_print: paged
+---
+This work is based on the paper by LAURENT LALOUX, PIERRE CIZEAU and MARC POTTERS "RANDOM MATRIX THEORY AND FINANCIAL CORRELATIONS".
+We are going to compose an optimal portfolio from stocks included into S&P 500 index.
+In order to determine the optimal portfolio, one has to invert the covariance matrix. Since this has, as a rule, a number of small eigenvalues,
+any measurement error will get amplified and the resulting portfolio will be
+sensitive to the noise.
+```{r}
+#Download the data
+df.sp <- read.csv('sp500.csv')
+library(BatchGetSymbols)
+
+first.date <- Sys.Date() - 3000
+last.date <- Sys.Date() - 60
+freq.data <- 'daily'
+# set tickers
+tickers <- df.sp$Symbol
+
+l.out <- BatchGetSymbols(tickers = tickers, 
+                         first.date = first.date,
+                         last.date = last.date, 
+                         freq.data = freq.data,
+                         cache.folder = file.path(tempdir(), 
+                                                  'BGS_Cache'),
+                         thresh.bad.data = 0.99)
+```
+We need to adjust the data so we write daily closing prices for each asset to columns of such data frame.
+```{r}
+# Transform the data on stocks prices
+df.portfolio <- l.out$df.tickers
+ndays <- length(unique(df.portfolio$ref.date)) # Number of days we have information on prices for
+ncomp <- length(unique(df.portfolio$ticker))  #Total number of assets
+data.prices <- setNames(data.frame(matrix(ncol = ncomp, nrow = ndays)), as.vector(unique(df.portfolio$ticker)))
+for(name in colnames(data.prices)){
+  tryCatch({
+    data.prices[name] <- subset(df.portfolio, df.portfolio$ticker == name)$price.close
+  },  error = function(e) { cat('Missing data')})}
+
+data.prices <- data.prices[, !apply( data.prices , 2 , function(x)any(is.na(x)))]
+head(data.prices)
+```
+We would estimate portfolios based on returns
+\[r = \frac{p_{t+1} - p_t}{p_t}\] 
+and the volatility of returns which are estimated as the standart deviation of the retuns. we need the data to have variance equal to 1 for further calculations, so we standartize it as follows:
+\[r_i^* = \frac{r_i - \bar{r_i}}{s_i}\] where $\bar{r_i}$ is the mean of returns for asset i and $s_i$ is the standart deviation.
+
+```{r}
+# Calculate historical daily returns
+asset.returns <- data.frame(apply(data.prices[,], 2 ,function(x) diff(x)/head(x,-1)))
+head(asset.returns)
+#Normalize the data in order to get variance 1
+library(BBmisc)
+normalized.asset.returns <- normalize(asset.returns)
+```
+The empirical correlation matix is obtained as
+\[E_{ij} = \frac{1}{T}\sum_{t=1}^T x_t_i y_t_j\] where $x_t^i = r^i_t/ \sigma_i$. Denote by $\mathbf{C}$ Having $\sigma_i = 1$ after normalization the weights of min-variance portfolio are given by 
+\[w = R \frac{C^{-1} r}{r^TC^{-1} r}\]
+Potentially, the optimal Markowitz solution allocates a very large weight to small eigenvalues, which may be entirely dominated by measurement noise and hence unstable. We will determine eigenvalues which potentially come from the noise and eliminate their influence on the resulting portfolio.  
+We compute empirical correlation matrix and look at the distribution of its eigenvalues.
+
+```{r warning=FALSE}
+# Calculate empirical correlation matrix
+empirical.correlation <- cor(normalized.asset.returns)
+plot(eigen(empirical.correlation)$values, main="Eigenvalues of the empirical matrix", col='#708090', ylab="Value", pch=20)
+```
+The largest eigenvalue corresponds to so-called market mode, and the second largest is 'sector mode' and the maximum variance is achieved when we take their projection on the first coordinate axis. However, we are interested in such linear combination that gives us minimum variance, so we take a look at the smallest eigenvalues and see if they follow the patterns of random noise. The density function for eigenvalues is given by Marchenko-Pastur distribution at the limit $N \rightarrow \infty $ and $T \rightarrow \infty$ and having $Q = T/N$ fixed and greater than 1
+$$ p_c (\lambda) = \frac{Q}{2 \pi \sigma^2} \frac{ \sqrt{(\lambda_{max} - \lambda)(\lambda - \lambda_{min})}{\lambda} $$ 
+where $\lambda_{max}$ and $\lambda_min$ are given by $\lambda{max, min} = \sigma^2 (1 + 1/Q \pm 2\sqrt{1/Q})$.
+```{r}
+# Calculate theoretical "noisy" eigenvalues
+Q <- ndays / ncomp
+lambda.min <- (1+1/Q-2*sqrt(1/Q)) 
+lambda.max <- (1+1/Q+2*sqrt(1/Q))
+#Theoretical eigenvalues should be between red lines
+plot(eigen(empirical.correlation)$values, main="Eigenvalues of the empirical matrix", col='#708090', ylab="Value")
+abline(a=lambda.min, b=0, col="red")
+abline(a=lambda.max, b=0, col="red")
+```
+So, if our matrix has eigenvalues appearing solely from the random noise, they might lay between those two red lines.
+
+```{r}
+# Plot the eigenvalues that fit into theoretical distribution
+values <- eigen(empirical.correlation)$values
+theoretical.range <- values[values > lambda.min & values < lambda.max]
+plot(theoretical.range, main="Theoretical range of random eigenvalues", col = "#708090", ylab="Eigenvalue")
+abline(a=lambda.min, b=0, col="red")
+abline(a=lambda.max, b=0, col="red")
+```
+
+For N and T being sufficiently lafge so that $$Q = \frac{T}{N} $$is fixed and greater
+than one, the spectral density of the small eigenvalues will be given by
+the Marchenko-Pastur density function. 
+```{r}
+# Find theoretical Marchenko-Pastur density of the eigenvalues
+plot.values <- sort(values)[1:(length(values) - 10)] # Exclude 10 largest for plotting conveniently
+dencity <- function(len, Q, sigma){
+  lambda.max <- sigma*(1 + 1/Q + 2 * sqrt(1/Q))
+  lambda.min <- sigma*(1 + 1/Q - 2 * sqrt(1/Q))
+  lambda <- seq(from=lambda.min, to=lambda.max, length.out=len)
+  p <-  Q/(2*pi*sigma)* sqrt((lambda.max - lambda)*(lambda - lambda.min))/lambda
+  d <- cbind(lambda, p)
+ (d)
+}
+p <- dencity(1000, Q, 1) # Due to the sample error we can adjust Q and sigma to better fit the distribution
+p.fit <- dencity(1000, 3.8, 0.39)# Empirically the best fit
+hist(plot.values, col = 'grey', probability=TRUE, breaks=50, main = "Histogram of eigenvalues", xlab="Eigenvalue")
+lines(p)
+lines(p.fit, col="red")
+
+# All eigenvalues above lambda threshhold(lambda max with adjusted parameters) are considered informative
+lambda.threshhold <- 0.39^2*(1 + 1/3.8 + 2 * sqrt(1/3.8))
+```
+After fitting Marchenko-Pastur distribution we can see that eigenvalues below 1.1 are well explained by random noise. There are a few methods to find a better estimator then. We use the estimator for the correlation matrix obtained from eigenvalues clipping. The idea behind eigenvalues clipping is to assume that all eigenvalues above Marchenko-Pastur upper edge contain some signal so they should be kept. The eigenvalues below such threshhold are replaced with constant $\gamma$ which preserves the trace of the empirical correlation matrix. So,
+\[\xi_k = \begin{cases} \lambda_k , &  \lambda_k > \alpha\\
+   \gamma & \mbox{otherwise}  \end{cases} \]
+And the estimator for correlation matrix is 
+\[\tilde{C} := \sum_{k=1}^N \xi_k v_k v_k^T \]
+
+```{r}
+under.values <- values[values < lambda.threshhold]
+cat(length(under.values)/length(values)*100, "% of eigenvalues are coming from noise")
+gamma <- (sum(eigen((empirical.correlation))$values) - sum(under.values)) / length(under.values)
+cleaned.values <- values
+cleaned.values[cleaned.values < lambda.threshhold] <- gamma
+vectors <- eigen(empirical.correlation)$vectors
+D <- diag(cleaned.values, nrow=length(cleaned.values), ncol=length(cleaned.values))
+cleaned.matrix <- t(vectors) * D * vectors
+```
+The Markowitz-weights corresponding to the empirical covariance matrix are
+\[w_i = \frac{\Sigma_{j=1}^N C_{ij}}{\Sigma_{i, j=1}^N C_{ij}}\]
+where C is the correlation matrix. We get rid of the negative values and redistribute their weight to correctly estimate the variance of portfolio.
+```{r}
+# Find weights
+library(MASS)
+library(pracma)
+e <- rep(1, length(values))
+w <- dot(ginv(cleaned.matrix), e)
+w.cleaned <- w / dot(w, e)
+length(w.cleaned[w.cleaned < 0]) # No short-selling involved
+
+w.noisy <- dot(ginv(empirical.correlation), e)
+w.noisy <- w.noisy / dot(w.noisy, e)
+length(w.noisy[w.noisy < 0]) # 210 weights are negative 
+# To avoid the problems with backtesting of the results we ignore negative values and redistribute the results
+w.noisy[w.noisy < 0] <- 0
+w.noisy <- w.noisy/sum(w.noisy)
+```
+
+```{r}
+# Find in-sample returns
+library(ggplot2)
+library(reshape2)
+asset.returns$n <- NULL
+asset.returns$portfolio <- rep(0, (ndays-1))
+for(row in 1:nrow(asset.returns)){
+  asset.returns$portfolio[row] <- sum(as.numeric(asset.returns[row, ]*w.cleaned))}
+
+asset.returns$portfolio.noisy <- rep(0, (ndays-1))
+for(row in 1:nrow(asset.returns)){
+  asset.returns$portfolio.noisy[row] <- sum(as.numeric(asset.returns[row, (1:ncol(asset.returns)-1)]*w.noisy))}
+asset.returns$n <- c(1:(ndays-1))
+df10 <- asset.returns[10:40,]
+d <- melt(df10, id.vars="n")
+```
+
+```{r}
+# 30-day sample of denoised(red) portfolio and ordinary Markowitz portfolio(blue)
+ggplot(d, aes(n, value, col=variable)) + geom_line() + theme(legend.position = "none") + scale_color_manual(values=c(rep("grey", 453), c("red"), c('blue')))+labs(title = "Returns of separate assets vs. returns of the portfolio")
+```
+
+```{r}
+plot(cumsum(asset.returns$portfolio.noisy), type='l', col='grey', main='In-sample cumulative returns of portfolios', xlab='Time', ylab='Cumulative returns')
+lines(cumsum(asset.returns$portfolio), col='red')
+legend(2, 0.8, legend=c("Cleaned", "Noisy"),
+       col=c("red", "grey"), lty=1:1, cex=0.8)
+```
+
+```{r}
+# Check out of sample performance
+test.set <- BatchGetSymbols(tickers = tickers, 
+                         first.date = Sys.Date() - 60,
+                         last.date = Sys.Date(), 
+                         freq.data = freq.data,
+                         cache.folder = file.path(tempdir(), 
+                                                  'BGS_Cache'),
+                         thresh.bad.data = 0.99)
+test.portfolio <- test.set$df.tickers
+ndayst <- length(unique(test.portfolio$ref.date)) 
+ncompt <- length(unique(test.portfolio$ticker))
+```
+```{r}
+test.portfolio
+```
+
+
+```{r}
+test.prices <- setNames(data.frame(matrix(ncol = ncompt, nrow = ndayst )), as.vector(unique(test.portfolio$ticker)))
+for(name in colnames(test.prices)){
+    test.prices[name] <- subset(test.portfolio, test.portfolio$ticker == name)$price.close}
+test.prices <- test.prices[, !apply( test.prices , 2 , function(x)any(is.na(x)))]
+head(test.prices)
+```
+
+```{r warning=FALSE}
+test.returns <- data.frame(apply(test.prices[,], 2 ,function(x) diff(x)/head(x,-1)))
+test.returns$portfolio <- rep(0, (ndayst-1))
+for(row in 1:nrow(test.returns)){
+  test.returns$portfolio[row] <- sum(as.numeric(test.returns[row, ] * w.cleaned))}
+
+test.returns$portfolio.noisy <- rep(0, (ndayst -1 ))
+for(row in 1:nrow(test.returns)){
+  test.returns$portfolio.noisy[row] <- sum(as.numeric(test.returns[row, -which(names(test.returns) %in% c("portfolio"))]) * w.noisy)}
+test.returns
+```
+
+```{r}
+# Plot cumulative return
+plot(cumsum(test.returns$portfolio),type='l', main = "Out-of-sample cumulative return of portfolios", ylab = "Cumulative return", xlab="Time", col='grey')
+lines(cumsum(test.returns$portfolio.noisy), type='l', col='red')
+legend(2, 0.06, legend=c("Noisy", "Cleaned"),
+       col=c("red", "grey"), lty=1:1, cex=0.8)
+```
+We can see that sometimes noisy portfolio beats our cleaned one. Of course, the covariance matrix is time dependent regardless of the filtering, and the filtering changes overtime. It's possible for the unfiltered portfolio to beat the filtered portfolio on occasion, but if it does, it's probably due to random chance. 
+In summary,	we have seen that the smallest eigenvalues of the correlation matrix, on which the Markowitz solution puts the most weight, are absolutely dominated by the measurement noise. Consequently, to choose the most efficinet portfolio one needs a better estimator $\tilde{C}$, than empirical correlation matrix.  $\tilde{C}$ might account for the underestimation of small eigenvalues and overestimation of large eigenvalues. Eigenvalues clipping approach which we used did not show steady better perfomance than simple unfiltered portfolio. Probably, this cleaning overlooks the fact that the large empirical eigenvalues are overestimated, so further research is needed to find better correlation matrix estimator.
+

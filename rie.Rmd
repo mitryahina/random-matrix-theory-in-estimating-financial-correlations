@@ -1,0 +1,70 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+
+```{r warning=FALSE}
+# RIE
+values <- eigen(empirical.correlation)$values
+z <- values - complex(real=0, imaginary = 1)/sqrt(ncomp)
+s <- function(z, k, values, n){
+  res <- sum(rep(z, n) - values)
+  res <- res - (z - values[k])
+  (res/n)
+}
+xi_rie <- numeric(length = ncomp)
+for(i in seq(1, ncomp, by=1)){
+  xi <- values[i] / (1 - 1/Q + z[i]*s(z[i], i, values, ncomp)/Q)^2
+  xi_rie[i] <- xi
+}
+xi_rie <- xi_rie[!is.na(xi_rie)]
+```
+
+```{r}"
+# Correct the bias
+lambda.n <- min(values)
+lambda.plus <- lambda.n * ((1 + 1/Q) / (1 - 1/Q))^2
+sigma.sq <- lambda.n / (1 - sqrt(1/Q))^2
+
+# Stieltjes transform of the Marchenko-Pastur density
+gmp <- function(z){
+  ((z + sigma.sq*(1/Q - 1) - sqrt(z - lambda.n)*sqrt(z - lambda.plus))/(2*z*sigma.sq/Q))
+}
+
+gamma <- function(k){
+  (sigma.sq * (1 - 1/Q + z[k]*gmp(z[k])/Q)^2 / values[k])
+}
+gamma.vec <- numeric(length = ncomp)
+for(k in seq(1, ncomp, by=1)){
+  gamma.vec[k] <- gamma(k)
+}
+gamma.vec <- gamma.vec[!is.na(gamma.vec)]
+# Correct overestimated eigenvalues
+ind <- which(gamma.vec == gamma.vec[Re(gamma.vec^2) > 1])
+xi_rie[ind] <- xi_rie[ind] * gamma.vec[ind]
+xi_rie <- xi_rie[!is.na(xi_rie)]"
+```
+```
+```{r}
+"library(MASS)
+rie.corr <- xi_rie * eigen(empirical.correlation)$vectors * t(eigen(empirical.correlation)$vectors)
+plot(eigen(rie.corr)$values)
+w.rie <- colSums(ginv(rie.corr))/sum(ginv(rie.corr))
+asset.returns$rie.portfolio <- rep(0, ndays - 1)
+for(row in 1:nrow(asset.returns)){
+  asset.returns$rie.portfolio[row] <- sum(as.numeric(asset.returns[row, ]*w.rie))}
+"
+```
+
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
